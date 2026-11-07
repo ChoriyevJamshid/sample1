@@ -98,7 +98,7 @@
     .about-badge svg { width: 15px; height: 15px; }
     .toast { position: absolute; left: 35%; top: 26px; transform: translate(-50%, -10px); opacity: 0; background: #eceee7; border-radius: 24px; color: #3f4a35; padding: 9px 15px; font-size: 10px; pointer-events: none; transition: opacity .3s, transform .3s; }
     .toast.visible { opacity: 1; transform: translate(-50%, 0); }
-    .fallback { position: absolute; left: 8%; top: 27%; width: 50%; text-align: center; font-size: 14px; line-height: 1.8; padding: 20px; color: #c6c3da; }
+    .fallback { position: absolute; left: 8%; top: 27%; width: 50%; max-height: 45%; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; text-align: center; font-size: 14px; line-height: 1.8; padding: 20px; color: #c6c3da; background: #0b0e1cf2; border: 1px solid #ffffff22; border-radius: 12px; }
     .fallback[hidden] { display: none; }
     .lab:fullscreen { height: 100vh; width: 100vw; border-radius: 0; }
     @media (min-width: 1500px) { .intro { padding-top: 60px; } .lab { height: 640px; } }
@@ -156,7 +156,7 @@
           <p class="panel-foot">A little curiosity looks good on you.</p>
         </aside>
         <div class="toast" id="toast" role="status" aria-live="polite"></div>
-        <p class="fallback" id="fallback" hidden>Your browser couldn’t start the 3D view. Try opening this page in a browser with WebGL enabled.</p>
+        <p class="fallback" id="fallback" role="alert" hidden></p>
       </section>
       <div class="under-scene"><p><b>Go on, get a little lost.</b> That's what this space is for.</p><div class="key-tips"><span><kbd>↔</kbd>Rotate</span><span><kbd>+ / −</kbd>Zoom</span><span><kbd>Space</kbd>Pause</span></div></div>
       <section class="about" id="about"><div><h2>Less scrolling. More wonder.</h2><p>Orbit is a tiny interactive escape, built with real-time 3D and a healthy sense of curiosity.<br>Take a breath, move a planet, and see where a little play takes you.</p></div><span class="about-badge"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 2.2 5.8L18 10l-5.8 2.2L10 18l-2.2-5.8L2 10l5.8-2.2Z"/></svg>MADE FOR THE EXPLORER IN YOU</span></section>
@@ -243,9 +243,10 @@
 
       // A small, dependency-free WebGL renderer: actual 3D geometry, lighting, and depth.
       let gl;
-      try { gl = canvas.getContext('webgl', { antialias: true, alpha: true }); } catch { /* Show a helpful fallback below. */ }
-      function fail() { $('fallback').hidden = false; }
-      if (!gl) { fail(); return; }
+      function fail(message) { $('fallback').textContent = message; $('fallback').hidden = false; }
+      try { gl = canvas.getContext('webgl', { antialias: true, alpha: true }); }
+      catch (error) { fail(`Unable to create the WebGL context: ${error.message}`); return; }
+      if (!gl) { fail('Unable to create a WebGL context. Check that WebGL and hardware acceleration are enabled in your browser.'); return; }
       const vertexSource = `
         attribute vec3 aPosition;
         attribute vec3 aNormal;
@@ -265,7 +266,6 @@
         }
       `;
       const fragmentSource = `
-        precision mediump float;
         varying vec3 vNormal;
         varying vec3 vPosition;
         varying vec3 vWorld;
@@ -311,18 +311,27 @@
           gl_FragColor = vec4(color, 1.0);
         }
       `;
+      let floatPrecision;
       function shader(type, source) {
-        const result = gl.createShader(type); gl.shaderSource(result, source); gl.compileShader(result);
-        if (!gl.getShaderParameter(result, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(result));
+        // Use the same precision for shared uniforms and varyings in both stages.
+        // A fragment-only GL_FRAGMENT_PRECISION_HIGH fallback can mismatch the vertex stage.
+        const precisionHeader = `precision ${floatPrecision} float;\n`;
+        const result = gl.createShader(type); gl.shaderSource(result, precisionHeader + source); gl.compileShader(result);
+        if (!gl.getShaderParameter(result, gl.COMPILE_STATUS)) {
+          const stage = type === gl.VERTEX_SHADER ? 'Vertex' : 'Fragment';
+          throw new Error(`${stage} shader compilation failed: ${gl.getShaderInfoLog(result) || 'No compiler details available.'}`);
+        }
         return result;
       }
       function program(vertex, fragment) {
         const result = gl.createProgram(); gl.attachShader(result, shader(gl.VERTEX_SHADER, vertex)); gl.attachShader(result, shader(gl.FRAGMENT_SHADER, fragment)); gl.linkProgram(result);
-        if (!gl.getProgramParameter(result, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(result));
+        if (!gl.getProgramParameter(result, gl.LINK_STATUS)) throw new Error(`Shader program linking failed: ${gl.getProgramInfoLog(result) || 'No linker details available.'}`);
         return result;
       }
       let surface, starProgram;
       try {
+        const fragmentHighPrecision = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
+        floatPrecision = fragmentHighPrecision && fragmentHighPrecision.precision > 0 ? 'highp' : 'mediump';
         surface = program(vertexSource, fragmentSource);
         starProgram = program(`
           attribute vec3 aPosition;
@@ -335,8 +344,8 @@
             gl_Position = uProjection * vec4(aPosition, 1.0);
             gl_PointSize = (1.0 + fract(abs(aPosition.x) * 73.0) * 1.3) * uPixelRatio;
           }
-        `, `precision mediump float; varying float vAlpha; void main() { float d = length(gl_PointCoord - .5); gl_FragColor = vec4(.78, .81, 1.0, vAlpha * (1.0 - smoothstep(.12, .5, d))); }`);
-      } catch (error) { console.error('Unable to initialize the 3D scene:', error); fail(); return; }
+        `, `varying float vAlpha; void main() { float d = length(gl_PointCoord - .5); gl_FragColor = vec4(.78, .81, 1.0, vAlpha * (1.0 - smoothstep(.12, .5, d))); }`);
+      } catch (error) { console.error('Unable to initialize the 3D scene:', error); fail(`Unable to initialize the 3D scene: ${error.message}`); return; }
       const locations = {};
       for (const name of ['uModel', 'uProjection', 'uDistance', 'uDark', 'uLight', 'uRing', 'uKind', 'uSeed']) locations[name] = gl.getUniformLocation(surface, name);
       const positionLocation = gl.getAttribLocation(surface, 'aPosition');
@@ -438,7 +447,7 @@
         frame = requestAnimationFrame(render);
       }
       document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelAnimationFrame(frame); frame = 0; } else if (!frame && !contextLost) { lastTime = 0; frame = requestAnimationFrame(render); } });
-      canvas.addEventListener('webglcontextlost', (event) => { event.preventDefault(); contextLost = true; cancelAnimationFrame(frame); frame = 0; fail(); });
+      canvas.addEventListener('webglcontextlost', (event) => { event.preventDefault(); contextLost = true; cancelAnimationFrame(frame); frame = 0; fail('The WebGL context was lost. The scene will reload automatically when the graphics context is restored.'); });
       canvas.addEventListener('webglcontextrestored', () => window.location.reload());
       frame = requestAnimationFrame(render);
     })();
